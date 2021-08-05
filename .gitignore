@@ -1,4 +1,3 @@
-wgbs/plots
 .DS_Store
 */.DS_Store
 */*/.DS_Store
@@ -9,3 +8,5 @@ wgbs/CGmaptools/SNP_calls/
 wgbs/epidiverse/SNP_calls/
 wgbs/gemBS/bcf/
 wgbs/MethylExtract/SNP_calls/
+wgbs/plots
+reseq/variants

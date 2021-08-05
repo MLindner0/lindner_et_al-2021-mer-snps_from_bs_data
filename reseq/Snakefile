@@ -1,0 +1,453 @@
+# Snakemake pipeline for Bismark alignments with old flag values (CGmapTools compatible) of four wgbs samples used for evaluation of tools for SNP calling from wgbs data.
+# please note that here data from two sequencing runs were combined
+
+# import csv
+import csv
+
+# make dictionary for adding read groups to alignments:
+new_data_dict = {}
+with open("src/DNAreseq2021.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dictReseq = new_data_dict
+
+
+# define wildcards:
+SAMPLE, = glob_wildcards("raw_data/{sample}.R1.fq.gz")
+
+
+# pipeline
+# set rule all
+rule all:
+    input:
+        #expand("variants/SNPs_{sample}.vcf.gz.tbi", sample=SAMPLE),
+        "genome/reference.fa.sa",
+        "genome/reference.dict",
+        "genome/reference.fa.fai",
+        expand("alignments/{sample}.stats", sample=SAMPLE),
+        expand("alignments/{sample}.AverageCoverage", sample=SAMPLE),
+        "variants/GVCFall_SNPs.table",
+        "variants/Diagnostics_VariantScores.pdf",
+        expand("variants/SNPs_{sample}.vcf.gz.tbi", sample=SAMPLE),
+        expand("variants/SNPs_{sample}_BaselinesAlleles", sample=SAMPLE)
+
+
+
+# trimming
+rule trim1:
+    input:
+        R1="raw_data/{sample}.R1.fq.gz",
+        R2="raw_data/{sample}.R2.fq.gz"
+    output:
+        R1Out="trimmed_data/{sample}.R1_val_1.fq.gz",
+        R2Out="trimmed_data/{sample}.R2_val_2.fq.gz"
+    log:
+        "logs/{sample}_trimm.log"
+    conda:
+        "src/env_trim.yml"
+    threads: 1
+    shell:
+        "(trim_galore --2colour 20 --paired --fastqc -o trimmed_data/ {input.R1} {input.R2}) 2> {log}"
+
+# Genome prep: BWA index
+rule BWAindex:
+    input:
+        "genome/reference.fa"
+    output:
+        "genome/reference.fa.sa"
+    log:
+        "logs/BWA_index.log"
+    conda:
+        "src/env_align.yml"
+    threads: 1
+    shell:
+        "(bwa index {input}) 2> {log}"
+
+# Genome prep: sequence dictionary
+rule Dictionary:
+    input:
+        "genome/reference.fa"
+    output:
+        "genome/reference.dict"
+    log:
+        "logs/dictionary.log"
+    conda:
+        "src/env_align.yml"
+    threads: 1
+    shell:
+        "(picard CreateSequenceDictionary REFERENCE={input} OUTPUT={output}) 2> {log}"
+
+# Genome prep: sequence dictionary
+rule GenIndex:
+    input:
+        "genome/reference.fa"
+    output:
+        "genome/reference.fa.fai"
+    log:
+        "logs/samindex.log"
+    conda:
+        "src/env_align.yml"
+    threads: 1
+    shell:
+        "(samtools faidx {input}) 2> {log}"
+
+# alignments
+rule align:
+    input:
+        R1="trimmed_data/{sample}.R1_val_1.fq.gz",
+        R2="trimmed_data/{sample}.R2_val_2.fq.gz"
+    output:
+        "alignments/{sample}.sam"
+    params:
+        Barcode=lambda wildcards: dictReseq[wildcards.sample]['Barcode']
+    log:
+        "logs/{sample}_alignment.log"
+    conda:
+        "src/env_align.yml"
+    threads: 8
+    shell:
+        "(bwa mem -t 8 -R '@RG\\tID:lane1\\tSM:{wildcards.sample}\\tPL:illumina\\tLB:lib1\\tPU:HWGV3DSXY\\tBC:{params.Barcode}' genome/reference.fa {input.R1} {input.R2} > {output}) 2> {log}"
+
+# sort alignments
+rule sort:
+    input:
+        "alignments/{sample}.sam"
+    output:
+        "alignments/{sample}_coordinate.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_align_sort.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g SortSam I={input} O={output} SORT_ORDER=coordinate) 2> {log}"
+
+# convert alignments to BAM and mark duplicates
+rule dedup:
+    input:
+        "alignments/{sample}_coordinate.bam"
+    output:
+        "alignments/{sample}.deduplicated.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_deduplication.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g MarkDuplicates I={input} O={output} M={output}.metrics OPTICAL_DUPLICATE_PIXEL_DISTANCE=2500 VALIDATION_STRINGENCY=LENIENT MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=100) 2> {log}"
+
+# make index
+rule index1:
+    input:
+        "alignments/{sample}.deduplicated.bam"
+    output:
+        "alignments/{sample}.deduplicated.bam.bai"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_index.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# get samtools alignment stats
+rule stats:
+    input:
+        Align="alignments/{sample}.deduplicated.bam",
+        Index="alignments/{sample}.deduplicated.bam.bai"
+    output:
+        "alignments/{sample}.stats"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_align_stats.log"
+    threads: 1
+    shell:
+        "(samtools flagstat {input.Align} > {output}) 2> {log}"
+
+# get coverage depth and breadth for merged alignments
+rule coverage:
+    input:
+        Align="alignments/{sample}.deduplicated.bam",
+        Index="alignments/{sample}.deduplicated.bam.bai"
+    output:
+        depth="alignments/{sample}.AverageCoverage",
+        mpileup="alignments/{sample}.BasesCovered"
+    conda:
+        "src/env_align.yml"
+    threads: 1
+    shell:
+        """
+        samtools depth {input.Align} | awk '{{sum+=$3}} END {{ print "Average = ",sum/NR}}' > {output.depth}
+        MIN_COVERAGE_DEPTH=10
+        samtools mpileup {input.Align} | awk -v X="${{MIN_COVERAGE_DEPTH}}" '$4>=X' | wc -l > {output.mpileup}
+        """
+
+# analyze patterns of covariation
+rule covar:
+    input:
+        reference="genome/reference.fa",
+        alignment="alignments/{sample}.deduplicated.bam",
+        knownsnps="get-known-snps/known_snps.vcf"
+    output:
+        "alignments/{sample}_RC_recal_data.grp"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_covariation.log"
+    threads: 1
+    shell:
+        "(gatk BaseRecalibrator -R {input.reference} -I {input.alignment} --known-sites {input.knownsnps} -O {output}) 2> {log}"
+
+# apply the recalibration
+rule recal:
+    input:
+        reference="genome/reference.fa",
+        alignment="alignments/{sample}.deduplicated.bam",
+        recalfile="alignments/{sample}_RC_recal_data.grp"
+    output:
+        "alignments/{sample}.deduplicated_recalibrated.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_recalibration.log"
+    threads: 1
+    shell:
+        "(gatk ApplyBQSR -R {input.reference} -I {input.alignment} --bqsr-recal-file {input.recalfile} -O {output}) 2> {log}"
+
+# remove reads mapping to Z chromosome and MT
+rule split:
+    input:
+        keep="alignments/chr_keep.bed",
+        alignment="alignments/{sample}.deduplicated_recalibrated.bam",
+    output:
+        "alignments/{sample}.Auto.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_split.log"
+    threads: 1
+    shell:
+        "(samtools view -b -L {input.keep} {input.alignment}  > {output}) 2> {log}"
+
+# make index
+rule BAMindex:
+    input:
+        "alignments/{sample}.Auto.bam"
+    output:
+        "alignments/{sample}.Auto.bam.bai"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_index.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# call raw variants in sequence data
+rule rawvarinats:
+    input:
+        reference="genome/reference.fa",
+        alignment="alignments/{sample}.Auto.bam"
+    output:
+        "variants/{sample}.raw_variants.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_call_raw_variants.log"
+    threads: 1
+    shell:
+        "(gatk HaplotypeCaller -R {input.reference} -I {input.alignment} -ERC GVCF --output-mode EMIT_ALL_CONFIDENT_SITES -O {output}) 2> {log}"
+
+# combine raw variants of all samples
+rule combineVCFs:
+    input:
+        reference="genome/reference.fa",
+        VCFs=expand("variants/{sample}.raw_variants.vcf", sample=SAMPLE)
+    output:
+        "variants/all_vcfs.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/combine_vcfs.log"
+    threads: 1
+    shell:
+        "(gatk CombineGVCFs -R {input.reference} -V variants/F3_E_BD_27272.raw_variants.vcf -V variants/F3_E_BD_27320.raw_variants.vcf -V variants/F3_L_BD_27327.raw_variants.vcf -V variants/F3_L_BD_27378.raw_variants.vcf -O {output}) 2> {log}"
+
+# genotype variants
+rule GenotypeVCFs:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/all_vcfs.vcf"
+    output:
+        "variants/GVCFall.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/genotype_vcfs.log"
+    threads: 1
+    shell:
+        "(gatk GenotypeGVCFs -R {input.reference} -V {input.VCFs} --heterozygosity 0.003 -stand-call-conf 30 -O {output}) 2> {log}"
+
+# select SNPs
+rule SelectSNPs:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/GVCFall.vcf"
+    output:
+        "variants/GVCFall_SNPs.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/Select_SNPs.log"
+    threads: 1
+    shell:
+        "(gatk SelectVariants -R {input.reference} -V {input.VCFs} --select-type-to-include SNP -restrict-alleles-to BIALLELIC -O {output}) 2> {log}"
+
+# extract SNPs (to make diagnostic plots in R)
+rule ExtractSNPs:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/GVCFall_SNPs.vcf"
+    output:
+        "variants/GVCFall_SNPs.table"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/ExtractSnps.log"
+    threads: 1
+    shell:
+        "(gatk VariantsToTable -R {input.reference} -V {input.VCFs} -F CHROM -F POS -F QUAL -F QD -F DP -F MQ -F MQRankSum -F FS -F ReadPosRankSum -F SOR -GF GT -GF DP -O {output}) 2> {log}"
+
+# make diagnostic plots in R
+rule DiagnosticsSNPs:
+    input:
+        Script="src/Diagnostics_Variants.R",
+        SNPs="variants/GVCFall_SNPs.table"
+    output:
+        "variants/Diagnostics_VariantScores.pdf"
+    conda:
+        "src/env_plot.yml"
+    log:
+        "logs/DiagnosticsSnps.log"
+    threads: 1
+    shell:
+        "(Rscript {input.Script}) 2> {log}"
+
+# set SNPs that are within filter thresholds to 'PASS'
+rule FilterSNPs:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/GVCFall_SNPs.vcf"
+    output:
+        "variants/GVCFall_SNPs_filter.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/FilterSnps.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} -filter 'QUAL < 0 || MQ < 40.00 || SOR > 4.00 || QD < 2.00 || FS > 60.00 || MQRankSum < -12.50 || MQRankSum > 12.50 || ReadPosRankSum < -10.00 || ReadPosRankSum > 10.00' --filter-name 'My_snp_filter' -O {output}) 2> {log}"
+
+# get SNPs that passed filter
+rule ApplyFilterSNPs:
+    input:
+        "variants/GVCFall_SNPs_filter.vcf"
+    output:
+        "variants/GVCFall_SNPs_filterPASSED.vcf"
+    log:
+        "logs/ApplyFilterSnps.log"
+    threads: 1
+    shell:
+        "(grep -E '^#|PASS' {input} > {output}) 2> {log}"
+
+# filter vcf file for depth (DP) of SNP positions
+rule FilterDepth:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/GVCFall_SNPs_filterPASSED.vcf"
+    output:
+        "variants/GVCFall_SNPs_filterPASSED_DPfilter.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/FilterDepth.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} -G-filter 'DP < 10 || DP > 75' -G-filter-name 'DPfilter_10-75' -O {output}) 2> {log}"
+
+# set genotype of depth filtered SNP positions to 'no call'
+rule SetNoCall:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/GVCFall_SNPs_filterPASSED_DPfilter.vcf"
+    output:
+        "variants/SNPs.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/FilterDepthNoCall.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} --set-filtered-genotype-to-no-call -O {output}) 2> {log}"
+
+# Split vcf by sample
+rule SelectSample:
+    input:
+        reference="genome/reference.fa",
+        VCFs="variants/SNPs.vcf"
+    output:
+        "variants/SNPs_{sample}.vcf"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/Select_{sample}.log"
+    threads: 1
+    shell:
+        "(gatk SelectVariants -R {input.reference} -V {input.VCFs} -sn {wildcards.sample} --exclude-non-variants -O {output}) 2> {log}"
+
+# make vcf.gz (+index) for downstream processing
+rule VCFgz:
+    input:
+        "variants/SNPs_{sample}.vcf"
+    output:
+        "variants/SNPs_{sample}.vcf.gz"
+    conda:
+        "src/env_bcftools.yml"
+    log:
+        "logs/{sample}_vcfgz.log"
+    threads: 1
+    shell:
+        "(bcftools view {input} -O z -o {output}) 2> {log}"
+
+rule VCFgzIndex:
+    input:
+        "variants/SNPs_{sample}.vcf.gz"
+    output:
+        "variants/SNPs_{sample}.vcf.gz.tbi"
+    conda:
+        "src/env_bcftools.yml"
+    log:
+        "logs/{sample}_vcfgz.log"
+    threads: 1
+    shell:
+        "(bcftools index -t {input}) 2> {log}"
+
+# get baseline Ref/Alt alleles for evaluation of tools for SNP calling from bisulfite sequencing data with RtgTools
+rule RTGBase:
+    input:
+        VCFs="variants/SNPs_{sample}.vcf.gz",
+    output:
+        "variants/SNPs_{sample}_BaselinesAlleles"
+    conda:
+        "src/env_bcftools.yml"
+    log:
+        "logs/{sample}_FNFP_Baseline.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"

@@ -70,9 +70,9 @@ rename 's/_001//' *.fastq # remove _001
 ```
 
 ### Quality control, data trimming, and alignments
-Quality control and data trimming were part of a snakemake pipeline used for another project. The pipeline also included alignment and methylation calling using Bismark (new flag values) for all samples. The pipeline can be found on gitHub (UPDATE LINK).
+Quality control and data trimming were part of a snakemake pipeline used for another project. The pipeline also included alignment and methylation calling using Bismark (new flag values) for all samples. The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs_new_flag_vals).
 
-Bismark alignments with old flag values were  part of a snakemake pipeline written for this project which can be found on gitHub (UPDATE LINK). The pipeline includes the Bismark alignments with old flag values, deduplication, addition of sample-specific read groups, and merging of alignments of the two sequencing runs for each sample for the Bismark alignments with the old flag values. It also includes the assessment of the number of mapped reads, average coverage depth, and breadth of coverage as well as the removal of reads mapping to the Z chromosome or mitochondrial DNA of Bismark alignments with both new and old flag values.
+Bismark alignments with old flag values were  part of a snakemake pipeline written for this project which can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs). The pipeline includes the Bismark alignments with old flag values, deduplication, addition of sample-specific read groups, and merging of alignments of the two sequencing runs for each sample for the Bismark alignments with the old flag values. It also includes the assessment of the number of mapped reads, average coverage depth, and breadth of coverage as well as the removal of reads mapping to the Z chromosome or mitochondrial DNA of Bismark alignments with both new and old flag values.
 
 The alignments with biscuit and gemBS were part of the tool-specific pipelines (see below).
 
@@ -122,7 +122,7 @@ cat  ~/gt_ERC_WGBS_ExampleBirds.vcf.header.sorted | ~/gt_ERC_WGBS_ExampleBirds.v
 bcftools sort -o known_SNPs_sorted.vcf gt_ERC_WGBS_ExampleBirds_sorted.vcf
 ```
 
-The pipeline includes the BQ recalibration of alignments, the removal of reads mapping to Z chromosome or mitochondrial DNA (for the recalibrated alignments), SNP calling from the recalibrated alignments as well as non-recalibrated alignments, SNP filtering (including diagnostics plots, **Figure 3** and **Figure 4**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+The pipeline includes the BQ recalibration of alignments, the removal of reads mapping to Z chromosome or mitochondrial DNA (for the recalibrated alignments), SNP calling from the recalibrated alignments as well as non-recalibrated alignments, SNP filtering (including diagnostics plots, **Figure 3** and **Figure 4**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/Bis-snp).
 
 ```{bash run_Bis-SNP, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # check whether pipeline is ok by doing a dry run
@@ -138,7 +138,7 @@ snakemake -j 8 --use-conda
 
 #### BS-SNPer
 
-The pipeline includes SNP calling, SNP filtering (including a diagnostics plot, **Figure 5**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+The pipeline includes SNP calling, SNP filtering (including a diagnostics plot, **Figure 5**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/Bis-snp).
 
 ```{bash run_BS-SNPer, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # check whether pipeline is ok by doing a dry run
@@ -152,7 +152,7 @@ snakemake -j 4 --use-conda
 
 #### CGmapTools
 
-The pipeline includes SNP calling using the Bayesian and binomial strategy, SNP filtering (including a diagnostics plot, **Figure 6** and **Figure 7**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+The pipeline includes SNP calling using the Bayesian and binomial strategy, SNP filtering (including a diagnostics plot, **Figure 6** and **Figure 7**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/CGmaptools).
 
 ```{bash run_CGmapTools, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # check whether pipeline is ok by doing a dry run
@@ -168,7 +168,7 @@ snakemake -j 8 --use-conda
 
 #### EpiDiverse-SNP pipeline
 
-In contrast to the other tools, the EpiDiverse-SNP pipeline does not constitute a bisulfite sequencing data specific SNP caller, but rather involves a tool for double-masking of the alignments to make them compatible with conventional SNP caller. The EpiDiverse-SNP pipeline is executed using next flow. Subsequently, a snakemake pipeline is used to filter SNPs (including a diagnostics plot, **Figure 8**) and evaluate the SSNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+In contrast to the other tools, the EpiDiverse-SNP pipeline does not constitute a bisulfite sequencing data specific SNP caller, but rather involves a tool for double-masking of the alignments to make them compatible with conventional SNP caller. The EpiDiverse-SNP pipeline is executed using next flow. Subsequently, a snakemake pipeline is used to filter SNPs (including a diagnostics plot, **Figure 8**) and evaluate the SSNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/epidiverse).
 
 ```{bash run_EpiDiv, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # run EpiDiverse-SNP pipeline using nextflow
@@ -186,7 +186,7 @@ snakemake -j 4 --use-conda
 
 #### MethylExtract
 
-The pipeline includes SNP calling, SNP filtering (including a diagnostics plot, **Figure 9**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+The pipeline includes SNP calling, SNP filtering (including a diagnostics plot, **Figure 9**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/MethylExtract).
 
 
 ```{bash run_MethylExtract, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
@@ -201,7 +201,7 @@ snakemake -j 32 --use-conda
 
 #### biscuit
 
-In contrast to most other tools, biscuit (as well as gemBS, see below) is a 'whole-pipeline' tool that includes the alignment, deduplication, addition of sample-specific read groups, merging of alignments of the two sequencing runs for each sample, assessment of the number of mapped reads, average coverage depth, and breadth of coverage, the removal of reads mapping to the Z chromosome or mitochondrial DNA, SNP calling, SNP filtering (including a diagnostics plot, **Figure 10**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+In contrast to most other tools, biscuit (as well as gemBS, see below) is a 'whole-pipeline' tool that includes the alignment, deduplication, addition of sample-specific read groups, merging of alignments of the two sequencing runs for each sample, assessment of the number of mapped reads, average coverage depth, and breadth of coverage, the removal of reads mapping to the Z chromosome or mitochondrial DNA, SNP calling, SNP filtering (including a diagnostics plot, **Figure 10**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/biscuit).
 
 ```{bash run_biscuit, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # check whether pipeline is ok by doing a dry run
@@ -215,7 +215,7 @@ snakemake -j 32 --use-conda
 
 #### gemBS
 
-Like biscuit, gemBS is a 'whole-pipeline' tool. GemBS requires a metadata file and a config file that together provide information on the samples and the gemBS pipeline parameters. First, we created new links to the trimmed seq data files and prepared the metadata file by running a custom R script (which can be found on gitHub; ADD LINK). Creating the links in this way helps with merging the samples. Then, we wrote the config file (which can be found on gitHub; ADD LINK) to set the parameters for the gemBS pipeline.
+Like biscuit, gemBS is a 'whole-pipeline' tool. GemBS requires a metadata file and a config file that together provide information on the samples and the gemBS pipeline parameters. First, we created new links to the trimmed seq data files and prepared the metadata file by running a custom R script (which can be found on gitHub; https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/gemBS. Creating the links in this way helps with merging the samples. Then, we wrote the config file (which can be found on gitHub; same link) to set the parameters for the gemBS pipeline.
 
 ```{bash prepare_gemBS, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # make new links to trimmed data
@@ -226,7 +226,7 @@ for f in *.gz; do ln -s /home/NIOO.INT/melaniel/projects/WGBS_Snakemake_SnpCalli
 R -e Make_Metadata_gemBS.R
 ```
 
-The snakemake pipeline includes the writing of a .json file (based on metadata and .config file), indexing of the reference genome, alignments, assessment of the number of mapped reads, average coverage depth, and breadth of coverage, SNP calling (inlcuding deduplication), removal of SNPs located within the Z chromosome or mitochondrial DNA, SNP filtering (including a diagnostics plot, **Figure 11**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (ADD LINK).
+The snakemake pipeline includes the writing of a .json file (based on metadata and .config file), indexing of the reference genome, alignments, assessment of the number of mapped reads, average coverage depth, and breadth of coverage, SNP calling (inlcuding deduplication), removal of SNPs located within the Z chromosome or mitochondrial DNA, SNP filtering (including a diagnostics plot, **Figure 11**), and the evaluation of SNP calls using the baseline list of known SNPs derived from the whole-genome resequencing data (but see 'Evaluation of SNPs called from whole genome bisulfite sequencing data' below). The pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/wgbs/gemBS).
 
 ```{bash run_gemBS, eval=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=100)}
 # check whether pipeline is ok by doing a dry run
@@ -290,7 +290,7 @@ multiqc -d -n report_all ./reports
 
 Our pipeline follows the GATK best practice for model (https://currentprotocols.onlinelibrary.wiley.com/doi/10.1002/0471250953.bi1110s43) and non-model organisms (https://evodify.com/gatk-in-non-model-organism/) and included quality control, data trimming, alignment, recalibration of base quality (BQ) scores, variant calling, and variant filtering (including diagnostics plots, **Figure 1** and **Figure 2**) and was executed such that samples were processed in parallel where applicable ('-j 4' option in 'snakemake' call).
 
-The Snakefile and other files needed to run the pipeline can be found on gitHub (UPDATE LINK).
+The Snakefile and other files needed to run the pipeline can be found on gitHub (https://github.com/MLindner0/lindner_et_al-2021-mer-snps_from_bs_data/tree/master/reseq).
 
 ```{bash Snake_reseq, eval=FALSE}
 # link to genome:
