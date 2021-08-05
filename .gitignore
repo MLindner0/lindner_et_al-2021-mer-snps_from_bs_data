@@ -1,0 +1,10 @@
+wgbs/plots
+*/.DS_Store
+*/*/.DS_Store
+wgbs/Bis-snp/SNP_calls/
+wgbs/biscuit/pileup/
+wgbs/BS-snper/SNP_calls/
+wgbs/CGmaptools/SNP_calls/
+wgbs/epidiverse/SNP_calls/
+wgbs/gemBS/bcf/
+wgbs/MethylExtract/SNP_calls/
