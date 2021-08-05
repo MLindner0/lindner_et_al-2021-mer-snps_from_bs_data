@@ -1,0 +1,316 @@
+# Snakemake pipeline for SNP and methylation calling from 28 WGBS samples (only four samples are used for evaluation of tools for SNP calling from wgbs).
+# please note that here data from up to three sequencing runs were combined; for the four selected samples data from two sequencing runs was available.
+# here, Bismark alignments use the new flag values.
+
+# import cvv
+import csv
+
+# make dictionary for adding read groups to alignments:
+# for how to make .csv files, see make_csv_for_dictionary.R
+new_data_dict = {}
+with open("src/Run_seq2018.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_seq2018 = new_data_dict
+
+new_data_dict = {}
+with open("src/Run_reseq2020.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_reseq2020 = new_data_dict
+
+new_data_dict = {}
+with open("src/Run_reseq2020_SP.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_reseq2020_SP = new_data_dict
+
+dict_Readgroup = dict(seq2018 = dict_seq2018, reseq2020 = dict_reseq2020, reseq2020_SP = dict_reseq2020_SP)
+
+
+# define wildcards:
+SAMPLE, = glob_wildcards("raw_data/reseq2020/{sample}_R1.fastq.gz")
+NEW, = glob_wildcards("raw_data/reseq2020_SP/{new}_R1.fastq.gz")
+RUN = ["seq2018", "reseq2020"]
+
+# get samples in two runs only:
+tworuns = set(SAMPLE) - set(NEW)
+OLD = list(tworuns)
+print(OLD)
+
+INDIV = [k for k in SAMPLE if 'BD' in k]
+print(INDIV)
+
+# constrain wildcards
+wildcard_constraints:
+    new = '|'.join([re.escape(x) for x in NEW]),
+    old = '|'.join([re.escape(x) for x in OLD]),
+    run = '|'.join([re.escape(x) for x in RUN]),
+    indiv = '|'.join([re.escape(x) for x in INDIV])
+
+
+# pipeline
+# set rule all
+rule all:
+    input:
+        expand("temp/alignment_stats/{sample}.AverageCoverage", sample=SAMPLE),
+        expand("temp/BS-conversion/{run}_{sample}_out", run=RUN, sample=SAMPLE),
+        expand("temp/BS-conversion/reseq2020_SP_{new}_out", new=NEW)
+
+# trimming; raw data in different formats between runs and different number of samples between runs; one rule per run
+rule trim1:
+    input:
+        R1="raw_data/seq2018/{sample}_R1.fastq",
+        R2="raw_data/seq2018/{sample}_R2.fastq"
+    output:
+        R1Out="trimmed_data/seq2018/{sample}_R1_val_1.fq.gz",
+        R2Out="trimmed_data/seq2018/{sample}_R2_val_2.fq.gz"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/seq2018/{sample}_trimm.log"
+    threads: 1
+    shell:
+        "(trim_galore --2colour 20 --paired -o --gzip trimmed_data/seq2018/ {input.R1} {input.R2}) 2> {log}"
+
+rule trim2:
+    input:
+        R1="raw_data/reseq2020/{sample}_R1.fastq.gz",
+        R2="raw_data/reseq2020/{sample}_R2.fastq.gz"
+    output:
+        R1Out="trimmed_data/reseq2020/{sample}_R1_val_1.fq.gz",
+        R2Out="trimmed_data/reseq2020/{sample}_R2_val_2.fq.gz"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/reseq2020/{sample}_trimm.log"
+    threads: 1
+    shell:
+        "(trim_galore --2colour 20 --paired -o trimmed_data/reseq2020/ {input.R1} {input.R2}) 2> {log}"
+
+rule trim3:
+    input:
+        R1="raw_data/reseq2020_SP/{new}_R1.fastq.gz",
+        R2="raw_data/reseq2020_SP/{new}_R2.fastq.gz"
+    output:
+        R1Out="trimmed_data/reseq2020_SP/{new}_R1_val_1.fq.gz",
+        R2Out="trimmed_data/reseq2020_SP/{new}_R2_val_2.fq.gz"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/reseq2020_SP/{new}_trimm.log"
+    threads: 1
+    shell:
+        "(trim_galore --2colour 20 --paired -o trimmed_data/reseq2020_SP/ {input.R1} {input.R2}) 2> {log}"
+
+# alignments; different number of samples for third run; extra rule for third run until alignments are merged
+rule align1:
+    input:
+        R1Tr="trimmed_data/{run}/{sample}_R1_val_1.fq.gz",
+        R2Tr="trimmed_data/{run}/{sample}_R2_val_2.fq.gz"
+    output:
+        "out/{run}/alignment/{sample}_R1_val_1_bismark_bt2_pe.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{run}/{sample}_align.log"
+    threads: 8
+    shell:
+        "(bismark --genome genome/ -1 {input.R1Tr} -2 {input.R2Tr} --parallel 8 --temp_dir out/{wildcards.run}/temp/ -o out/{wildcards.run}/alignment/) 2> {log}"
+
+rule align2:
+    input:
+        R1Tr="trimmed_data/reseq2020_SP/{new}_R1_val_1.fq.gz",
+        R2Tr="trimmed_data/reseq2020_SP/{new}_R2_val_2.fq.gz"
+    output:
+        "out/reseq2020_SP/alignment/{new}_R1_val_1_bismark_bt2_pe.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/reseq2020_SP/{new}_align.log"
+    threads: 8
+    shell:
+        "(bismark --genome genome/ -1 {input.R1Tr} -2 {input.R2Tr} --parallel 8 --temp_dir out/reseq2020_SP/temp/ -o out/reseq2020_SP/alignment/) 2> {log}"
+
+# get bisulfite conversion
+rule BSconv:
+    input:
+        "out/{run}/alignment/{sample}_R1_val_1_bismark_bt2_PE_report.txt"
+    output:
+        "temp/BS-conversion/{run}_{sample}_out"
+    log:
+        "logs/{run}/{sample}_BSconv.log"
+    threads: 1
+    shell:
+        """
+        grep 'C methylated in CHG context:' {input} | sed -e 's/%//g' | awk -v OFS='\t' '{{print $6,(100-$6),"{wildcards.run}","{wildcards.sample}"}}' > {output}
+        """
+
+rule BSconv2:
+    input:
+        "out/reseq2020_SP/alignment/{new}_R1_val_1_bismark_bt2_PE_report.txt"
+    output:
+        "temp/BS-conversion/reseq2020_SP_{new}_out"
+    log:
+        "logs/reseq2020_SP/{new}_BSconv.log"
+    threads: 1
+    shell:
+        """
+        grep 'C methylated in CHG context:' {input} | sed -e 's/%//g' | awk -v OFS='\t' '{{print $6,(100-$6),"reseq2020_SP","{wildcards.new}"}}' > {output}
+        """
+
+# deduplication
+rule dedup1:
+    input:
+        "out/{run}/alignment/{sample}_R1_val_1_bismark_bt2_pe.bam"
+    output:
+        "out/{run}/alignment/{sample}.deduplicated.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{run}/{sample}_dedup.log"
+    threads: 1
+    shell:
+        "(deduplicate_bismark -p --output_dir out/{wildcards.run}/alignment/ -o {wildcards.sample} {input}) 2> {log}"
+
+rule dedup2:
+    input:
+        "out/reseq2020_SP/alignment/{new}_R1_val_1_bismark_bt2_pe.bam"
+    output:
+        "out/reseq2020_SP/alignment/{new}.deduplicated.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/reseq2020_SP/{new}_dedup.log"
+    threads: 1
+    shell:
+        "(deduplicate_bismark -p --output_dir out/reseq2020_SP/alignment/ -o {wildcards.new} {input}) 2> {log}"
+
+# add read group to samples; use dict_Readgroup
+rule readgr1:
+    input:
+        "out/{run}/alignment/{sample}.deduplicated.bam",
+    output:
+        "out/{run}/alignment/{sample}.deduplicated.withRG.bam"
+    params:
+        Lane=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Lane'],
+        Barcode=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Barcode'],
+        Library=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Library'],
+        Flowcell=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Flowcell']
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{run}/{sample}_RG.log"
+    threads: 1
+    shell:
+        "(picard AddOrReplaceReadGroups I={input} O={output} ID={params.Flowcell}.{params.Lane} LB=KapaBiosystems-{params.Library} PL=illumina PU={params.Flowcell}.{params.Lane}.{params.Barcode} SM={wildcards.sample} CREATE_INDEX=true VALIDATION_STRINGENCY=SILENT SORT_ORDER=queryname) 2> {log}"
+
+rule readgr2:
+    input:
+        "out/reseq2020_SP/alignment/{new}.deduplicated.bam",
+    output:
+        "out/reseq2020_SP/alignment/{new}.deduplicated.withRG.bam"
+    params:
+        Lane=lambda wildcards: dict_Readgroup['reseq2020_SP'][wildcards.new]['Lane'],
+        Barcode=lambda wildcards: dict_Readgroup['reseq2020_SP'][wildcards.new]['Barcode'],
+        Library=lambda wildcards: dict_Readgroup['reseq2020_SP'][wildcards.new]['Library'],
+        Flowcell=lambda wildcards: dict_Readgroup['reseq2020_SP'][wildcards.new]['Flowcell']
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/reseq2020_SP/{new}_RG.log"
+    threads: 1
+    shell:
+        "(picard AddOrReplaceReadGroups I={input} O={output} ID={params.Flowcell}.{params.Lane} LB=KapaBiosystems-{params.Library} PL=illumina PU={params.Flowcell}.{params.Lane}.{params.Barcode} SM={wildcards.new} CREATE_INDEX=true VALIDATION_STRINGENCY=SILENT SORT_ORDER=queryname) 2> {log}"
+
+# merge files from first two runs for samples that were run twice
+rule merge1:
+    input:
+        R2018="out/seq2018/alignment/{old}.deduplicated.withRG.bam",
+        R2020="out/reseq2020/alignment/{old}.deduplicated.withRG.bam"
+    output:
+        "out/merged/alignment/{old}.deduplicated_merged.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{old}_merge.log"
+    threads: 1
+    shell:
+        "(picard MergeSamFiles I={input.R2018} I={input.R2020} O={output} SORT_ORDER=queryname) 2> {log}"
+
+# merge files from all three runs for samples that were run three times (na here)
+rule merge2:
+    input:
+        R2018="out/seq2018/alignment/{new}.deduplicated.withRG.bam",
+        R2020="out/reseq2020/alignment/{new}.deduplicated.withRG.bam",
+        R2020SP="out/reseq2020_SP/alignment/{new}.deduplicated.withRG.bam"
+    output:
+        "out/merged/alignment/{new}.deduplicated_merged.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{new}_merge.log"
+    threads: 1
+    shell:
+        "(picard MergeSamFiles I={input.R2018} I={input.R2020} I={input.R2020SP} O={output} SORT_ORDER=queryname) 2> {log}"
+
+# sort Bismark alignment
+rule sort:
+    input:
+        "out/merged/alignment/{sample}.deduplicated_merged.bam"
+    output:
+        "out/merged/alignment/{sample}.deduplicated_merged_sorted.bam"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{sample}_sort.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g SortSam I={input} O={output} SORT_ORDER=coordinate) 2> {log}"
+
+# make index
+rule index:
+    input:
+        "out/merged/alignment/{sample}.deduplicated_merged_sorted.bam"
+    output:
+        "out/merged/alignment/{sample}.deduplicated_merged_sorted.bam.bai"
+    conda:
+        "src/env_Bismark.yml"
+    log:
+        "logs/{sample}_index.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# get coverage depth and breadth for alignments
+rule coverage:
+    input:
+        Align="out/merged/alignment/{sample}.deduplicated_merged_sorted.bam",
+        Index="out/merged/alignment/{sample}.deduplicated_merged_sorted.bam.bai"
+    output:
+        depth="temp/alignment_stats/{sample}.AverageCoverage",
+        mpileup="temp/alignment_stats/{sample}.BasesCovered"
+    conda:
+        "src/env_Bismark.yml"
+    threads: 1
+    shell:
+        """
+        samtools depth {input.Align} | awk '{{sum+=$3}} END {{ print "Average = ",sum/NR}}' > {output.depth}
+        MIN_COVERAGE_DEPTH=10
+        samtools mpileup {input.Align} | awk -v X="${{MIN_COVERAGE_DEPTH}}" '$4>=X' | wc -l > {output.mpileup}
+        """
