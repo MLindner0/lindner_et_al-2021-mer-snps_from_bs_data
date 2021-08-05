@@ -1,4 +1,5 @@
 wgbs/plots
+.DS_Store
 */.DS_Store
 */*/.DS_Store
 wgbs/Bis-snp/SNP_calls/
