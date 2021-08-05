@@ -1,0 +1,353 @@
+# Snakemake pipeline for SNP calling from four samples of wgbs data with Bis-SNP
+
+# define wildcards
+SAMPLE, = glob_wildcards("../../reseq/trimmed_data/{sample}.R1_val_1.fq.gz")
+TYPE = ["newV", "newV_NoRecal"]
+PARA = ["GQ", "QUAL"]
+
+# constrain wildcard
+wildcard_constraints:
+    sample = '|'.join([re.escape(x) for x in SAMPLE]),
+    type = '|'.join([re.escape(x) for x in TYPE]),
+    para = '|'.join([re.escape(x) for x in PARA])
+
+# make disctionary for DP filter (99th percentile)
+dict_CovFilter = dict(newV = 104, newV_NoRecal = 99)
+
+
+# pipeline
+# set rule all
+rule all:
+    input:
+        expand("alignment/recalibration/{sample}_CoV_after.csv", sample=SAMPLE),
+        expand("alignment/recalibration/{sample}.Auto.bam.bai", sample=SAMPLE),
+        "SNP_calls/newV/Diagnostics_DP_GQ.pdf",
+        expand("RTG_{para}_{sample}.{type}_done.txt", para=PARA, sample=SAMPLE, type=TYPE),
+        expand("RTG_{para}_{sample}.{type}/weighted_roc.tsv", para=PARA, sample=SAMPLE, type=TYPE),
+        expand("SNP_calls/{type}/{sample}_SNPs_FP", sample=SAMPLE, type=TYPE),
+        expand("SNP_calls/{type}/{sample}_SNPs_FN", sample=SAMPLE, type=TYPE),
+        expand("SNP_calls/{type}/{sample}_SNPs_FP_GT", sample=SAMPLE, type=TYPE)
+
+# base quality (BQ) score recalibration:
+# count covariates for alignments
+rule countCovariates:
+    input:
+        Align="../alignments/New_flags/{sample}.deduplicated_merged_sorted.bam",
+        SNPs="known_SNPs_sorted.vcf"
+    output:
+        "alignment/recalibration/{sample}_CoV_before.csv"
+    log:
+        "logs/{sample}_CoV.log"
+    conda:
+        "../src/env_bis-snp0.82.yml"
+    benchmark:
+        "benchmarks/{sample}_CoV_.txt"
+    threads: 8
+    shell:
+        "(bis-snp -T BisulfiteCountCovariates -R ../genome/genome.fa -I {input.Align} -knownSites {input.SNPs} -cov ReadGroupCovariate -cov QualityScoreCovariate -cov CycleCovariate -recalFile {output} -nt 8) 2> {log}"
+
+# recalibrate BQ scores based on counted covariates
+rule recalibration:
+    input:
+        Align="../alignments/New_flags/{sample}.deduplicated_merged_sorted.bam",
+        Cov="alignment/recalibration/{sample}_CoV_before.csv"
+    output:
+        "alignment/recalibration/{sample}.recal.bam"
+    log:
+        "logs/{sample}_recal.log"
+    conda:
+        "../src/env_bis-snp0.82.yml"
+    benchmark:
+        "benchmarks/{sample}_recal.txt"
+    threads: 1
+    shell:
+        "(bis-snp -T BisulfiteTableRecalibration -R ../genome/genome.fa -I {input.Align} -o {output} -recalFile {input.Cov} -maxQ 40) 2> {log}"
+
+# re-count covariates for BQ score recalibrated alignments
+rule countCovariates2:
+    input:
+        Align="alignment/recalibration/{sample}.recal.bam",
+        SNPs="known_SNPs_sorted.vcf"
+    output:
+        "alignment/recalibration/{sample}_CoV_after.csv"
+    log:
+        "logs/{sample}_CoV2.log"
+    conda:
+        "../src/env_bis-snp0.82.yml"
+    benchmark:
+        "benchmarks/{sample}_CoV2.txt"
+    threads: 8
+    shell:
+        "(bis-snp -T BisulfiteCountCovariates -R ../genome/genome.fa -I {input.Align} -knownSites {input.SNPs} -cov ReadGroupCovariate -cov QualityScoreCovariate -cov CycleCovariate -recalFile {output} -nt 8) 2> {log}"
+
+# remove reads mapping to Z chromosome and MT
+rule split:
+    input:
+        keep="../chr_keep.bed",
+        alignment="alignment/recalibration/{sample}.recal.bam",
+    output:
+        "alignment/recalibration/{sample}.Auto.bam"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_split.log"
+    threads: 1
+    shell:
+        "(samtools view -b -L {input.keep} {input.alignment}  > {output}) 2> {log}"
+
+# make index
+rule BAMindex:
+    input:
+        "alignment/recalibration/{sample}.Auto.bam"
+    output:
+        "alignment/recalibration/{sample}.Auto.bam.bai"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_index2.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# call SNPs from BQ score recalibrated alignments using Bis-SNP v1.0.1
+rule callnewV:
+    input:
+        "alignment/recalibration/{sample}.Auto.bam"
+    output:
+        "SNP_calls/newV/{sample}_snp.raw.vcf.out"
+    log:
+        "logs/{sample}_newV_call.log"
+    conda:
+        "../src/env_bis-snp_new.yml"
+    benchmark:
+        "benchmarks/{sample}_oldV_call.txt"
+    threads: 1
+    shell:
+        "(bis-snp -T BisulfiteGenotyper -R ../genome/genome.fa -I {input} -vfn1 Meth_calls/newV/{wildcards.sample}_cpg.raw.vcf -vfn2 {output} -stand_call_conf 0 -toCoverage 1000 -hets 0.003) 2> {log}"
+
+# call SNPs from alignments (no BQ score recalibration) using Bis-SNP v1.0.1
+rule callnoRC:
+    input:
+        "../alignments/New_flags/{sample}.Auto.bam"
+    output:
+        "SNP_calls/newV_NoRecal/{sample}_snp.raw.vcf.out"
+    log:
+        "logs/{sample}_newV_NoRecal_call.log"
+    conda:
+        "../src/env_bis-snp_new.yml"
+    benchmark:
+        "benchmarks/{sample}_newV_NoRecal_call.txt"
+    threads: 1
+    shell:
+        "(bis-snp -T BisulfiteGenotyper -R ../genome/genome.fa -I {input} -vfn1 Meth_calls/newV_NoRecal/{wildcards.sample}_cpg.raw.vcf -vfn2 {output} -stand_call_conf 0 -toCoverage 1000 -hets 0.003) 2> {log}"
+
+# make sure that only SNPs are selected
+rule SelectSNPs:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{type}/{sample}_snp.raw.vcf.out"
+    output:
+        "SNP_calls/{type}/{sample}_SNPs.vcf"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{type}_{sample}_Select_SNPs.log"
+    threads: 1
+    shell:
+        "(gatk SelectVariants -R {input.reference} -V {input.VCFs} --select-type-to-include SNP -restrict-alleles-to BIALLELIC -O {output}) 2> {log}"
+
+# clean up vcf
+rule RemoveN:
+    input:
+        "SNP_calls/{type}/{sample}_SNPs.vcf"
+    output:
+        "SNP_calls/{type}/{sample}_SNPsNoN.vcf"
+    log:
+        "logs/{type}_{sample}_SNPsNoN.log"
+    threads: 1
+    shell:
+        """
+        (awk -v OFS='\t' '{{ if(($4!="N")) {{ print }} }}' {input} > {output}) 2> {log}
+        """
+
+# extract SNPs (to make diagnostic plots in R)
+rule ExtractSNPs:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{type}/{sample}_SNPsNoN.vcf"
+    output:
+        "SNP_calls/{type}/{sample}_SNPs.table"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{type}_{sample}_ExtractSnps.log"
+    threads: 1
+    shell:
+        "(gatk VariantsToTable -R {input.reference} -V {input.VCFs} -F CHROM -F POS -F QUAL -F QD -F DP -F MQ -F MQRankSum -F FS -F ReadPosRankSum -F SOR -GF GT -GF DP -GF GQ -O {output}) 2> {log}"
+
+# make diagnostic plots in R
+rule DiagnosticsSNPs:
+    input:
+        Script="Diagnostics_Variants.R",
+        SNPs=expand("SNP_calls/{type}/{sample}_SNPs.table", type=TYPE, sample=SAMPLE)
+    output:
+        "SNP_calls/newV/Diagnostics_DP_GQ.pdf"
+    conda:
+        "../../reseq/src/env_plot.yml"
+    log:
+        "logs/DiagnosticsSnps.log"
+    threads: 1
+    shell:
+        "(Rscript {input.Script}) 2> {log}"
+
+# filter vcf file for depth (DP) of SNP positions
+rule FilterDepth:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{type}/{sample}_SNPs.vcf"
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_DPfilter.vcf"
+    params:
+        CovUp=lambda wildcards: dict_CovFilter[wildcards.type]
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{type}_{sample}_FilterDepth.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} -filter 'DP < 10 || DP > {params.CovUp}' --filter-name 'FAIL_DP' -O {output}) 2> {log}"
+
+# only keep SNPs that pass quality check and are genotyped
+rule FilterAgain:
+    input:
+        "SNP_calls/{type}/{sample}_SNPs_DPfilter.vcf"
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_Good.vcf"
+    log:
+        "logs/{type}_{sample}_Filter.log"
+    threads: 1
+    shell:
+        """
+        grep -E '^#|PASS' {input}  > {output}
+        """
+
+# make vcf.gz (+index) for downstream processing
+rule VCFgz:
+    input:
+        "SNP_calls/{type}/{sample}_SNPs_Good.vcf"
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_vcf1.log"
+    threads: 1
+    shell:
+        "(bcftools view {input} -O z -o {output}) 2> {log}"
+
+rule VCFgzIndex:
+    input:
+        "SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz"
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz.tbi"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_vcf2.log"
+    threads: 1
+    shell:
+        "(bcftools index -t {input}) 2> {log}"
+
+# Downstream processing with RtgTools:
+# run RtgTools vcf evaluation with variant quality (QUAL) score as score value
+rule RTGQUAL:
+    input:
+        VCFs="SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz",
+        index="SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz.tbi",
+        base="../../reseq/variants/SNPs_{sample}.vcf.gz"
+    output:
+        "RTG_QUAL_{sample}.{type}_done.txt"
+    conda:
+        "../src/env_RTG.yml"
+    log:
+        "logs/{type}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (rtg vcfeval -b {input.base} -c {input.VCFs} -o RTG_QUAL_{wildcards.sample}.{wildcards.type} -t ../../reseq/genome/reference --roc-subset snp --vcf-score-field=QUAL) 2> {log}
+        touch {output}
+        """
+# get SNPs called as false negative SNPs
+rule RTGFN:
+    input:
+        VCFs="RTG_QUAL_{sample}.{type}/fn.vcf.gz",
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_FN"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_FN.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"
+
+# get SNPs called as false postive SNPs
+rule RTGFP:
+    input:
+        VCFs="RTG_QUAL_{sample}.{type}/fp.vcf.gz",
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_FP"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_FP.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"
+
+# get SNPs called as false postive SNPs while keeping genotype information
+rule RTGFPGT:
+    input:
+        VCFs="RTG_QUAL_{sample}.{type}/fp.vcf.gz",
+    output:
+        "SNP_calls/{type}/{sample}_SNPs_FP_GT"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_FP_GT.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT [%GT]\n' {input} > {output}) 2> {log}"
+
+# run RtgTools vcf evaluation with genotype quality (GQ) score as score value
+rule RTGGQ:
+    input:
+        VCFs="SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz",
+        index="SNP_calls/{type}/{sample}_SNPs_Good.vcf.gz.tbi",
+        base="../../reseq/variants/SNPs_{sample}.vcf.gz"
+    output:
+        "RTG_GQ_{sample}.{type}_done.txt"
+    conda:
+        "../src/env_RTG.yml"
+    log:
+        "logs/{type}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (rtg vcfeval -b {input.base} -c {input.VCFs} -o RTG_GQ_{wildcards.sample}.{wildcards.type} -t ../../reseq/genome/reference --roc-subset snp) 2> {log}
+        touch {output}
+        """
+
+# make output readable
+rule RTG:
+    input:
+        "RTG_{para}_{sample}.{type}/weighted_roc.tsv.gz"
+    output:
+        "RTG_{para}_{sample}.{type}/weighted_roc.tsv"
+    log:
+        "logs/{para}_{type}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (zcat {input} > {output}) 2> {log}
+        """

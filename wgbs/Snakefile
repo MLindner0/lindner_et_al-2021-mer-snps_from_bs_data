@@ -1,0 +1,232 @@
+# Snakemake pipeline for Bismark alignments with old flag values (CGmapTools compatible) of four wgbs samples used for evaluation of tools for SNP calling from wgbs data.
+# please note that here data from two sequencing runs were combined
+
+# import csv
+import csv
+
+# make dictionary for adding read groups to alignments:
+# for how to make .csv files, see src/make_csv_for_dictionary.R
+new_data_dict = {}
+with open("src/Run_seq2018.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_seq2018 = new_data_dict
+
+new_data_dict = {}
+with open("src/Run_reseq2020.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_reseq2020 = new_data_dict
+
+dict_Readgroup = dict(seq2018 = dict_seq2018, reseq2020 = dict_reseq2020)
+
+
+# define wildcards
+SAMPLE, = glob_wildcards("../wgbs_snakemake_reseq/trimmed_data/{sample}.R1_val_1.fq.gz")
+RUN = ["seq2018", "reseq2020"]
+FLAGS = ["New_flags", "Old_flags"]
+
+# constrain wildcard
+wildcard_constraints:
+    sample = '|'.join([re.escape(x) for x in SAMPLE]),
+    run = '|'.join([re.escape(x) for x in RUN]),
+    flags = '|'.join([re.escape(x) for x in FLAGS])
+
+# pipeline
+# set rule all
+rule all:
+    input:
+        expand("alignments/{flags}/{sample}.Auto.bam.bai", flags=FLAGS, sample=SAMPLE),
+        expand("alignments/{flags}/{sample}.AverageCoverage", flags=FLAGS, sample=SAMPLE),
+        expand("alignments/{flags}/{sample}.stats", flags=FLAGS, sample=SAMPLE),
+        expand("alignments/BS-conversion/{run}_{sample}_out", run=RUN, sample=SAMPLE)
+
+# repeat alignments; use old flag values for CGmaptools input
+rule align1:
+    input:
+        R1Tr="/home/nioo/melaniel/projects/WGBS_Snakemake_Bismark/trimmed_data/{run}/{sample}_R1_val_1.fq.gz",
+        R2Tr="/home/nioo/melaniel/projects/WGBS_Snakemake_Bismark/trimmed_data/{run}/{sample}_R2_val_2.fq.gz"
+    output:
+        "alignments/Old_flags/{run}/{sample}_R1_val_1_bismark_bt2_pe.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{run}/{sample}_align_OF.log"
+    threads: 8
+    shell:
+        "(bismark --genome /home/nioo/melaniel/projects/WGBS_rbc_reseq2020/genome/ -1 {input.R1Tr} -2 {input.R2Tr} --old_flag --no_dovetail --parallel 8 --temp_dir alignments/temp/{wildcards.run} -o alignments/Old_flags/{wildcards.run}) 2> {log}"
+
+# get bisulfite conversion
+rule BSconv:
+    input:
+        "/home/nioo/melaniel/projects/WGBS_Snakemake_Bismark/out/{run}/alignment/{sample}_R1_val_1_bismark_bt2_PE_report.txt",
+    output:
+        "alignments/BS-conversion/{run}_{sample}_out"
+    log:
+        "logs/{run}/{sample}_BSconv.log"
+    threads: 8
+    shell:
+        """
+        grep 'C methylated in CHG context:' {input} | sed -e 's/%//g' | awk -v OFS='\t' '{{print $6,(100-$6),"{wildcards.run}","{wildcards.sample}"}}' > {output}
+        """
+# deduplication
+rule dedup1:
+    input:
+        "alignments/Old_flags/{run}/{sample}_R1_val_1_bismark_bt2_pe.bam"
+    output:
+        "alignments/Old_flags/{run}/{sample}.deduplicated.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{run}/{sample}_dedup_OF.log"
+    threads: 1
+    shell:
+        "(deduplicate_bismark -p --output_dir alignments/Old_flags/{wildcards.run} -o {wildcards.sample} {input}) 2> {log}"
+
+# add read group to samples; use dict_Readgroup
+rule readgr1:
+    input:
+        "alignments/Old_flags/{run}/{sample}.deduplicated.bam",
+    output:
+        "alignments/Old_flags/{run}/{sample}.deduplicated.withRG.bam"
+    params:
+        Lane=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Lane'],
+        Barcode=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Barcode'],
+        Library=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Library'],
+        Flowcell=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Flowcell']
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{run}/{sample}_RG_OF.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g AddOrReplaceReadGroups I={input} O={output} ID={params.Flowcell}.{params.Lane} LB=KapaBiosystems-{params.Library} PL=illumina PU={params.Flowcell}.{params.Lane}.{params.Barcode} SM={wildcards.sample} CREATE_INDEX=true VALIDATION_STRINGENCY=SILENT SORT_ORDER=queryname) 2> {log}"
+
+# merge files from first two runs for samples that were run twice
+rule merge1:
+    input:
+        R2018="alignments/Old_flags/seq2018/{sample}.deduplicated.withRG.bam",
+        R2020="alignments/Old_flags/reseq2020/{sample}.deduplicated.withRG.bam"
+    output:
+        "alignments/Old_flags/{sample}.deduplicated_merged.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_merge_OF.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g MergeSamFiles I={input.R2018} I={input.R2020} O={output} SORT_ORDER=queryname) 2> {log}"
+
+# sort Bismark alignment (new flags)
+rule sortNF:
+    input:
+        "/mnt/nfs/bioinfdata/home/NIOO/melaniel/projects/WGBS_Snakemake_Bismark/out/merged/alignment/{sample}.deduplicated_merged.bam"
+    output:
+        "alignments/New_flags/{sample}.deduplicated_merged_sorted.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_sort_NF.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g SortSam I={input} O={output} SORT_ORDER=coordinate) 2> {log}"
+
+# sort Bismark alignment (old flags)
+rule sortOF:
+    input:
+        "alignments/Old_flags/{sample}.deduplicated_merged.bam"
+    output:
+        "alignments/Old_flags/{sample}.deduplicated_merged_sorted.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_sort_OF.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g SortSam I={input} O={output} SORT_ORDER=coordinate) 2> {log}"
+
+# make index
+rule index1:
+    input:
+        "alignments/{flags}/{sample}.deduplicated_merged_sorted.bam"
+    output:
+        "alignments/{flags}/{sample}.deduplicated_merged_sorted.bam.bai"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_index1_{flags}.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# remove reads mapping to Z chromosome and MT
+rule split:
+    input:
+        keep="chr_keep.bed",
+        alignment="alignments/{flags}/{sample}.deduplicated_merged_sorted.bam",
+    output:
+        "alignments/{flags}/{sample}.Auto.bam"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_split_{flags}.log"
+    threads: 1
+    shell:
+        "(samtools view -b -L {input.keep} {input.alignment}  > {output}) 2> {log}"
+
+# make index
+rule index:
+    input:
+        "alignments/{flags}/{sample}.Auto.bam"
+    output:
+        "alignments/{flags}/{sample}.Auto.bam.bai"
+    conda:
+        "src/env_align.yml"
+    log:
+        "logs/{sample}_index_{flags}.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# get coverage depth and breadth for alignments
+rule coverage:
+    input:
+        Align="alignments/{flags}/{sample}.deduplicated_merged_sorted.bam",
+        Index="alignments/{flags}/{sample}.deduplicated_merged_sorted.bam.bai"
+    output:
+        depth="alignments/{flags}/{sample}.AverageCoverage",
+        mpileup="alignments/{flags}/{sample}.BasesCovered"
+    conda:
+        "src/env_align.yml"
+    threads: 1
+    shell:
+        """
+        samtools depth {input.Align} | awk '{{sum+=$3}} END {{ print "Average = ",sum/NR}}' > {output.depth}
+        MIN_COVERAGE_DEPTH=10
+        samtools mpileup {input.Align} | awk -v X="${{MIN_COVERAGE_DEPTH}}" '$4>=X' | wc -l > {output.mpileup}
+        """
+
+# get alignment statistics
+rule stats:
+    input:
+        Align="alignments/{flags}/{sample}.deduplicated_merged_sorted.bam",
+        Index="alignments/{flags}/{sample}.deduplicated_merged_sorted.bam.bai"
+    output:
+        "alignments/{flags}/{sample}.stats"
+    conda:
+        "src/env_align.yml"
+    threads: 1
+    shell:
+        """
+        samtools flagstat {input.Align} > {output}
+        """

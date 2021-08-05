@@ -1,12 +1,12 @@
-# Snakemake pipeline for SNP and methylation calling from 28 WGBS samples (only four samples are used for evaluation of tools for SNP calling from wgbs).
+# Snakemake pipeline for SNP and methylation calling from 28 WGBS samples (only four samples are used for evaluation of tools for SNP calling from wgbs data).
 # please note that here data from up to three sequencing runs were combined; for the four selected samples data from two sequencing runs was available.
 # here, Bismark alignments use the new flag values.
 
-# import cvv
+# import csv
 import csv
 
 # make dictionary for adding read groups to alignments:
-# for how to make .csv files, see make_csv_for_dictionary.R
+# for how to make .csv files, see src/make_csv_for_dictionary.R
 new_data_dict = {}
 with open("src/Run_seq2018.csv", 'r') as data_file:
     data = csv.DictReader(data_file, delimiter=",")

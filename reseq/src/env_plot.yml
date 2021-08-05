@@ -1,0 +1,7 @@
+dependencies:
+  - r-gsalib=2.1
+  - r-ggplot2=3.1.1
+  - r-gridextra=2.3
+  - r-cowplot=1.1.1
+  - r-stringr=1.4.0
+  - r-rcolorbrewer=1.1_2

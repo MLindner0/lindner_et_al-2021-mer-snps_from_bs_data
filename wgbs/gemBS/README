@@ -1,0 +1,6 @@
+# running gemBS in snakemake
+
+# create gemBS_latest.sif to run gemBS
+singularity pull shub://heathsc/gemBS
+# after server update;
+singularity pull --library string shub://heathsc/gemBS

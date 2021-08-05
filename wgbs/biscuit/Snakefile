@@ -1,0 +1,456 @@
+# Snakemake pipeline for SNP calling from four samples of wgbs data with biscuit
+# Note that biscuit constitutes a 'whole-pipeline' tool which inlcudes also the alignment
+
+# import csv
+import csv
+
+# make dictionary for adding read groups to alignments:
+# for how to make .csv files, see ../src/make_csv_for_dictionary.R
+new_data_dict = {}
+with open("../src/Run_seq2018.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_seq2018 = new_data_dict
+
+new_data_dict = {}
+with open("../src/Run_reseq2020.csv", 'r') as data_file:
+    data = csv.DictReader(data_file, delimiter=",")
+    for row in data:
+        item = new_data_dict.get(row["Sample"], dict())
+        item[row["Key"]] = row["Value"]
+        new_data_dict[row["Sample"]] = item
+
+print(new_data_dict)
+dict_reseq2020 = new_data_dict
+
+dict_Readgroup = dict(seq2018 = dict_seq2018, reseq2020 = dict_reseq2020)
+
+
+# define wildcards
+SAMPLE, = glob_wildcards("../../reseq/trimmed_data/{sample}.R1_val_1.fq.gz")
+RUN = ["seq2018", "reseq2020"]
+PARA = ["GQ", "QUAL"]
+
+# constrain wildcards
+wildcard_constraints:
+    sample = '|'.join([re.escape(x) for x in SAMPLE]),
+    run = '|'.join([re.escape(x) for x in RUN]),
+    para = '|'.join([re.escape(x) for x in PARA])
+
+
+# pipeline
+# set rule all
+rule all:
+    input:
+        expand("merged/{sample}.AverageCoverage", sample=SAMPLE),
+        expand("merged/{sample}.stats", sample=SAMPLE),
+        "pileup/Diagnostics_DP_GQ.pdf",
+        expand("RTG_{para}_{sample}_done.txt", sample=SAMPLE, para=PARA),
+        expand("RTG_{para}_{sample}/weighted_roc.tsv", sample=SAMPLE, para=PARA),
+        expand("pileup/{sample}_SNPs_FP", sample=SAMPLE),
+        expand("pileup/{sample}_SNPs_FN", sample=SAMPLE),
+        expand("pileup/{sample}_SNPs_FP_GT", sample=SAMPLE)
+
+# make alignments
+rule align:
+    input:
+        R1="../trimmed_data/{run}/{sample}_R1_val_1.fq.gz",
+        R2="../trimmed_data/{run}/{sample}_R2_val_2.fq.gz"
+    output:
+        "{run}/{sample}.bam"
+    conda:
+        "../src/env_biscuit.yml"
+    log:
+        "logs/{run}/{sample}_align.log"
+    benchmark:
+        "benchmarks/{run}/{sample}_align.benchmark.txt"
+    threads: 8
+    shell:
+        "(biscuit align -M -t 8 ../genome/genome.fa {input.R1} {input.R2} > {output}) 2> {log}"
+
+# sort alignments for deduplication
+rule sort:
+    input:
+        "{run}/{sample}.bam"
+    output:
+        "{run}/{sample}_sorted.bam"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{run}/{sample}_sort.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g SortSam I={input} O={output} SORT_ORDER=queryname) 2> {log}"
+
+# deduplication
+rule dedup:
+    input:
+        "{run}/{sample}_sorted.bam"
+    output:
+        "{run}/{sample}_deduplicated.bam"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{run}/{sample}_dedup.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g MarkDuplicates I={input} O={output} M={output}.metrics REMOVE_DUPLICATES=true OPTICAL_DUPLICATE_PIXEL_DISTANCE=2500 VALIDATION_STRINGENCY=LENIENT MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=100) 2> {log}"
+
+# add read groups to samples; use dict_Readgroup
+rule readgr:
+    input:
+        "{run}/{sample}_deduplicated.bam"
+    output:
+        "{run}/{sample}_deduplicated_RG.bam"
+    params:
+        Lane=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Lane'],
+        Barcode=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Barcode'],
+        Library=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Library'],
+        Flowcell=lambda wildcards: dict_Readgroup[wildcards.run][wildcards.sample]['Flowcell']
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{run}/{sample}_RG.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g AddOrReplaceReadGroups I={input} O={output} ID={params.Flowcell}.{params.Lane} LB=KapaBiosystems-{params.Library} PL=illumina PU={params.Flowcell}.{params.Lane}.{params.Barcode} SM={wildcards.sample} CREATE_INDEX=true VALIDATION_STRINGENCY=SILENT SORT_ORDER=queryname) 2> {log}"
+
+# merge alignment files of the same sample
+rule merge:
+    input:
+        R2018="seq2018/{sample}_deduplicated_RG.bam",
+        R2020="reseq2020/{sample}_deduplicated_RG.bam"
+    output:
+        "merged/{sample}.deduplicated_merged.bam"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_merge.log"
+    threads: 1
+    shell:
+        "(picard -Xmx2g MergeSamFiles I={input.R2018} I={input.R2020} O={output} SORT_ORDER=coordinate) 2> {log}"
+
+# make index
+rule index:
+    input:
+        "merged/{sample}.deduplicated_merged.bam"
+    output:
+        "merged/{sample}.deduplicated_merged.bam.bai"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_index.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# get alignment stats
+rule stats:
+    input:
+        Align="merged/{sample}.deduplicated_merged.bam",
+        Index="merged/{sample}.deduplicated_merged.bam.bai"
+    output:
+        "merged/{sample}.stats"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_align_stats.log"
+    threads: 1
+    shell:
+        "(samtools flagstat {input.Align} > {output}) 2> {log}"
+
+# get coverage depth and breadth for merged alignments
+rule coverage:
+    input:
+        Align="merged/{sample}.deduplicated_merged.bam",
+        Index="merged/{sample}.deduplicated_merged.bam.bai"
+    output:
+        depth="merged/{sample}.AverageCoverage",
+        mpileup="merged/{sample}.BasesCovered"
+    conda:
+        "../src/env_align.yml"
+    threads: 1
+    shell:
+        """
+        samtools depth {input.Align} | awk '{{sum+=$3}} END {{ print "Average = ",sum/NR}}' > {output.depth}
+        MIN_COVERAGE_DEPTH=10
+        samtools mpileup {input.Align} | awk -v X="${{MIN_COVERAGE_DEPTH}}" '$4>=X' | wc -l > {output.mpileup}
+        """
+
+# remove reads mapping to Z chromosome and MT
+rule split:
+    input:
+        keep="../chr_keep.bed",
+        alignment="merged/{sample}.deduplicated_merged.bam",
+    output:
+        "merged/{sample}.Auto.bam"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_split.log"
+    threads: 1
+    shell:
+        "(samtools view -b -L {input.keep} {input.alignment}  > {output}) 2> {log}"
+
+# make index
+rule index2:
+    input:
+        "merged/{sample}.Auto.bam"
+    output:
+        "merged/{sample}.Auto.bam.bai"
+    conda:
+        "../src/env_align.yml"
+    log:
+        "logs/{sample}_index.log"
+    threads: 1
+    shell:
+        "(samtools index {input}) 2> {log}"
+
+# call SNPs
+rule pileup:
+    input:
+        Align="merged/{sample}.Auto.bam",
+        Index="merged/{sample}.Auto.bam.bai"
+    output:
+        "pileup/{sample}.vcf"
+    conda:
+        "../src/env_biscuit.yml"
+    log:
+        "logs/{sample}_pileup.log"
+    benchmark:
+        "benchmarks/{sample}_pileup.benchmark.txt"
+    threads: 8
+    shell:
+        "(biscuit pileup -d -q 8 -o {output} ../genome/genome.fna {input.Align}) 2> {log}"
+
+# make sure that only SNPs are selected
+rule SelectSNPs:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="pileup/{sample}.vcf"
+    output:
+        "pileup/{sample}_SNPs.vcf"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{sample}_Select_SNPs.log"
+    threads: 1
+    shell:
+        "(gatk SelectVariants -R {input.reference} -V {input.VCFs} --select-type-to-include SNP -restrict-alleles-to BIALLELIC -O {output}) 2> {log}"
+
+# clean up vcf
+rule RemoveN:
+    input:
+        "pileup/{sample}_SNPs.vcf"
+    output:
+        "pileup/{sample}_SNPsNoN.vcf"
+    log:
+        "logs/{sample}_SNPsNoN.log"
+    threads: 1
+    shell:
+        """
+        (awk -v OFS='\t' '{{ if(($5!="N")) {{ print }} }}' {input} > {output}) 2> {log}
+        """
+
+# extract SNPs (to make diagnostic plots in R)
+rule ExtractSNPs:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="pileup/{sample}_SNPsNoN.vcf"
+    output:
+        "pileup/{sample}_SNPs.table"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{sample}_ExtractSnps.log"
+    threads: 1
+    shell:
+        "(gatk VariantsToTable -R {input.reference} -V {input.VCFs} -F CHROM -F POS -F QUAL -F QD -F DP -F MQ -F MQRankSum -F FS -F ReadPosRankSum -F SOR -GF GT -GF DP -GF GQ -O {output}) 2> {log}"
+
+# make diagnostic plots in R
+rule DiagnosticsSNPs:
+    input:
+        Script="Diagnostics_Variants.R",
+        SNPs=expand("pileup/{sample}_SNPs.table", sample=SAMPLE)
+    output:
+        "pileup/Diagnostics_DP_GQ.pdf"
+    conda:
+        "../../reseq/src/env_plot.yml"
+    log:
+        "logs/DiagnosticsSnps.log"
+    threads: 1
+    shell:
+        "(Rscript {input.Script}) 2> {log}"
+
+# filter vcf file for depth (DP) of SNP positions
+rule FilterDepth:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="pileup/{sample}_SNPsNoN.vcf"
+    output:
+        "pileup/{sample}_SNPs_DPfilter.vcf"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{sample}_FilterDepth.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} -G-filter 'DP < 10 || DP > 898' -G-filter-name 'FAIL_DP' -O {output}) 2> {log}"
+
+# set genotype of depth filtered SNP positions to 'no call'
+rule SetNoCall:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="pileup/{sample}_SNPs_DPfilter.vcf"
+    output:
+        "pileup/{sample}_SNPs_DPfilter_GT.vcf"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{sample}_FilterDepthNoCall.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} --set-filtered-genotype-to-no-call -O {output}) 2> {log}"
+
+# only keep SNPs that pass quality check and are genotyped
+rule FilterAgain:
+    input:
+        "pileup/{sample}_SNPs_DPfilter_GT.vcf"
+    output:
+        "pileup/{sample}_SNPs_Good.vcf"
+    log:
+        "logs/{sample}_Filter.log"
+    threads: 1
+    shell:
+        """
+        grep -E '^#|PASS' {input}  > pileup/{wildcards.sample}_temp
+        awk -v OFS='\t' 'substr($10,0,3)!="./."' pileup/{wildcards.sample}_temp > {output}
+        rm pileup/{wildcards.sample}_temp
+        """
+
+# make vcf.gz (+index) for downstream processing
+rule VCFgz:
+    input:
+        "pileup/{sample}_SNPs_Good.vcf"
+    output:
+        "pileup/{sample}_SNPs_Good.vcf.gz"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{sample}_vcf1.log"
+    threads: 1
+    shell:
+        "(bcftools view {input} -O z -o {output}) 2> {log}"
+
+rule VCFgzIndex:
+    input:
+        "pileup/{sample}_SNPs_Good.vcf.gz"
+    output:
+        "pileup/{sample}_SNPs_Good.vcf.gz.tbi"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{sample}_vcf2.log"
+    threads: 1
+    shell:
+        "(bcftools index -t {input}) 2> {log}"
+
+# Downstream processing with RtgTools:
+# run RtgTools vcf evaluation with variant quality (QUAL) score as score value
+rule RTGQUAL:
+    input:
+        VCFs="pileup/{sample}_SNPs_Good.vcf.gz",
+        index="pileup/{sample}_SNPs_Good.vcf.gz.tbi",
+        base="../../reseq/variants/SNPs_{sample}.vcf.gz"
+    output:
+        "RTG_QUAL_{sample}_done.txt"
+    conda:
+        "../src/env_RTG.yml"
+    log:
+        "logs/{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (rtg vcfeval -b {input.base} -c {input.VCFs} -o RTG_QUAL_{wildcards.sample} -t ../../reseq/genome/reference --roc-subset snp --vcf-score-field=QUAL) 2> {log}
+        touch {output}
+        """
+
+# get SNPs called as false negative SNPs
+rule RTGFN:
+    input:
+        VCFs="RTG_QUAL_{sample}/fn.vcf.gz",
+    output:
+        "pileup/{sample}_SNPs_FN"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{sample}_FN.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"
+
+# get SNPs called as false postive SNPs
+rule RTGFP:
+    input:
+        VCFs="RTG_QUAL_{sample}/fp.vcf.gz",
+    output:
+        "pileup/{sample}_SNPs_FP"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{sample}_FP.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"
+
+# get SNPs called as false postive SNPs while keeping genotype information
+rule RTGFPGT:
+    input:
+        VCFs="RTG_QUAL_{sample}/fp.vcf.gz",
+    output:
+        "pileup/{sample}_SNPs_FP_GT"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{sample}_FP_GT.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT [%GT]\n' {input} > {output}) 2> {log}"
+
+# run RtgTools vcf evaluation with genotype quality (GQ) score as score value
+rule RTGGQ:
+    input:
+        VCFs="pileup/{sample}_SNPs_Good.vcf.gz",
+        index="pileup/{sample}_SNPs_Good.vcf.gz.tbi",
+        base="../../reseq/variants/SNPs_{sample}.vcf.gz"
+    output:
+        "RTG_GQ_{sample}_done.txt"
+    conda:
+        "../src/env_RTG.yml"
+    log:
+        "logs/{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (rtg vcfeval -b {input.base} -c {input.VCFs} -o RTG_GQ_{wildcards.sample} -t ../../reseq/genome/reference --roc-subset snp) 2> {log}
+        touch {output}
+        """
+
+# make output readable
+rule RTG:
+    input:
+        "RTG_{para}_{sample}/weighted_roc.tsv.gz"
+    output:
+        "RTG_{para}_{sample}/weighted_roc.tsv"
+    log:
+        "logs/{para}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (zcat {input} > {output}) 2> {log}
+        """

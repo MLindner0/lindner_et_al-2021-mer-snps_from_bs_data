@@ -1,0 +1,9 @@
+name: bis-snp0.82
+channels:
+  - conda-forge
+  - bioconda
+  - r
+  - defaults
+dependencies:
+  - bis-snp=1.0.1=2
+  - gatk=3.8=py36_0

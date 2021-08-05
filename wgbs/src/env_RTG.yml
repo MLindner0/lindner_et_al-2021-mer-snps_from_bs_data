@@ -1,0 +1,9 @@
+name: RTG
+channels:
+  - conda-forge
+  - bioconda
+  - r
+  - defaults
+dependencies:
+  - rtg-tools=3.12=hdfd78af_1
+prefix: /home/nioo/melaniel/.conda/envs/RTG

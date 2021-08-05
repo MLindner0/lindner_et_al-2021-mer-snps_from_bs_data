@@ -1,0 +1,36 @@
+# Directory definitions
+base = /home/nioo/melaniel/projects/wgbs_snakemake_snpcalling/gemBS
+reference = /home/nioo/melaniel/projects/WGBS_rbc_reseq2020/genome/genome.fa
+reference_basename = genome
+
+sequence_dir = /home/nioo/melaniel/projects/wgbs_snakemake_snpcalling/gemBS/trimmed_data/
+bam_dir = ${base}/alignments
+bcf_dir = ${base}/bcf
+extract_dir = ${base}/extract
+report_dir = ${base}/report
+index_dir = ${base}/index
+
+# General project info
+project = PM_WGBS_ERC
+species = ParusMajor
+
+# Default parameters
+threads = 20
+jobs = 10
+
+[mapping]
+
+non_stranded = False
+remove_individual_bams = True
+
+[calling]
+
+reference_bias = 2
+left_trim = 0
+right_trim = 0
+keep_improper_pairs = False
+keep_duplicates = False
+haploid = False
+conversion = 0.01,0.05
+remove_individual_bcfs = True
+contig_pool_limit = 25000000

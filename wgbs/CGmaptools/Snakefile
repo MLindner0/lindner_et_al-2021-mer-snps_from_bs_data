@@ -1,0 +1,315 @@
+# Snakemake pipeline for SNP calling from four samples of wgbs data with CGmapTools (Bayesian and binomial strategy)
+
+# define wildcards
+SAMPLE, = glob_wildcards("../../reseq/trimmed_data/{sample}.R1_val_1.fq.gz")
+TYPE = ["binom", "bayes.dynamicP"]
+PARA = ["GQ", "QUAL"]
+
+# constrain wildcards
+wildcard_constraints:
+    sample = '|'.join([re.escape(x) for x in SAMPLE]),
+    type = '|'.join([re.escape(x) for x in TYPE]),
+    para = '|'.join([re.escape(x) for x in PARA])
+
+# make disctionary for DP filter (99th percentile)
+dict_CovFilter = {"binom": 151, "bayes.dynamicP": 172}
+
+
+# pipeline
+# set rule all
+rule all:
+    input:
+        "SNP_calls/Diagnostics_binom_DP_GQ.pdf",
+        expand("SNP_calls/{sample}.{type}_SNPs_Good2.vcf", sample=SAMPLE, type=TYPE),
+        expand("RTG_QUAL_{sample}.{type}_done.txt", sample=SAMPLE, type=TYPE),
+        expand("RTG_{para}_{sample}.{type}_done.txt", para=PARA, sample=SAMPLE, type=TYPE),
+        expand("RTG_{para}_{sample}.{type}/weighted_roc.tsv", para=PARA, sample=SAMPLE, type=TYPE),
+        expand("SNP_calls/{sample}.{type}_SNPs_FP", sample=SAMPLE, type=TYPE),
+        expand("SNP_calls/{sample}.{type}_SNPs_FP_GT", sample=SAMPLE, type=TYPE),
+        expand("SNP_calls/{sample}.{type}_SNPs_FN", sample=SAMPLE, type=TYPE)
+
+# build cgmap for SNP calling
+rule cgmap:
+    input:
+        "../alignments/Old_flags/{sample}.Auto.bam"
+    output:
+        "CGmap/{sample}.ATCGmap.gz"
+    log:
+        "logs/{sample}_cgmap.log"
+    benchmark:
+        "benchmarks/{sample}_cgmap.benchmark.txt"
+    threads: 1
+    shell:
+        "(cgmaptools convert bam2cgmap -b {input} -g /home/NIOO.INT/melaniel/projects/WGBS_rbc_reseq2020/genome/genome.fna --rmOverlap -o CGmap/{wildcards.sample}) 2> {log}"
+
+# call SNPs using the binomial strategy
+rule snpsBin:
+    input:
+        "CGmap/{sample}.ATCGmap.gz"
+    output:
+        "SNP_calls/{sample}.binom.vcf"
+    log:
+        "logs/{sample}_snpsBin.log"
+    benchmark:
+        "benchmarks/{sample}_snpsBin.benchmark.txt"
+    threads: 1
+    shell:
+        "(cgmaptools snv -i {input} -o SNP_calls/{wildcards.sample}.binom.snv -v {output} -m binom) 2> {log}"
+
+# call SNPs using the Bayesian strategy
+rule snpsBay:
+    input:
+        "CGmap/{sample}.ATCGmap.gz"
+    output:
+        "SNP_calls/{sample}.bayes.dynamicP.vcf"
+    log:
+        "logs/{sample}_snpsBay.log"
+    benchmark:
+        "benchmarks/{sample}_snpsBay.benchmark.txt"
+    threads: 1
+    shell:
+        "(cgmaptools snv -i {input} -o SNP_calls/{wildcards.sample}.bayes.dynamicP.snv -v {output} -m bayes --bayes-dynamicP) 2> {log}"
+
+# clean up vcf
+rule CleanVCF:
+    input:
+        "SNP_calls/{sample}.{type}.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_NoUnidentified.vcf"
+    log:
+        "logs/{sample}.{type}_RmUnidentified.log"
+    threads: 1
+    shell:
+        """
+        cat {input} | grep -vP '^#'  > {wildcards.sample}.{wildcards.type}.vcf.body
+        cat {input} | grep -P '^#' > {output}
+        cat {wildcards.sample}.{wildcards.type}.vcf.body | awk -v OFS='\t' '{{ if(($4!="N" && ($5=="A"||$5=="C"||$5=="G"||$5=="T"))) {{ print }} }}' >> {output}
+        rm {wildcards.sample}.{wildcards.type}.vcf.body
+        """
+
+# make sure that only SNPs are selected
+rule SelectSNPs:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{sample}.{type}_NoUnidentified.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs.vcf"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{sample}.{type}_Select_SNPs.log"
+    threads: 1
+    shell:
+        "(gatk SelectVariants -R {input.reference} -V {input.VCFs} --select-type-to-include SNP -restrict-alleles-to BIALLELIC -O {output}) 2> {log}"
+
+# extract SNPs (to make diagnostic plots in R)
+rule ExtractSNPs:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{sample}.{type}_SNPs.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs.table"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{type}_{sample}_ExtractSnps.log"
+    threads: 1
+    shell:
+        "(gatk VariantsToTable -R {input.reference} -V {input.VCFs} -F CHROM -F POS -F QUAL -F QD -F DP -F MQ -F MQRankSum -F FS -F ReadPosRankSum -F SOR -GF GT -GF DP -GF GQ -O {output}) 2> {log}"
+
+# make diagnostic plots in R
+rule DiagnosticsSNPs:
+    input:
+        Script="Diagnostics_Variants.R",
+        SNPs=expand("SNP_calls/{sample}.{type}_SNPs.vcf", sample=SAMPLE, type=TYPE)
+    output:
+        "SNP_calls/Diagnostics_binom_DP_GQ.pdf"
+    conda:
+        "../../reseq/src/env_plot.yml"
+    log:
+        "logs/DiagnosticsSnps.log"
+    threads: 1
+    shell:
+        "(Rscript {input.Script}) 2> {log}"
+
+# filter vcf file for depth (DP) of SNP positions
+rule FilterDepth:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{sample}.{type}_SNPs.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_DPfilter.vcf"
+    params:
+        CovUp=lambda wildcards: dict_CovFilter[wildcards.type]
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{type}_{sample}_FilterDepth.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} -G-filter 'DP < 10 || DP > {params.CovUp}' -G-filter-name 'FAIL_DP' -O {output}) 2> {log}"
+
+# set genotype of depth filtered SNP positions to 'no call'
+rule SetNoCall:
+    input:
+        reference="../../reseq/genome/reference.fa",
+        VCFs="SNP_calls/{sample}.{type}_SNPs_DPfilter.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_DPfilter_GT.vcf"
+    conda:
+        "../../reseq/src/env_align.yml"
+    log:
+        "logs/{type}_{sample}_FilterDepthNoCall.log"
+    threads: 1
+    shell:
+        "(gatk VariantFiltration -R {input.reference} -V {input.VCFs} --set-filtered-genotype-to-no-call -O {output}) 2> {log}"
+
+# only keep SNPs that pass quality check and are genotyped
+rule FilterAgain:
+    input:
+        "SNP_calls/{sample}.{type}_SNPs_DPfilter_GT.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_Good.vcf"
+    log:
+        "logs/{type}_{sample}_Filter.log"
+    threads: 1
+    shell:
+        """
+        grep -E '^#|PASS' {input}  > SNP_calls/{wildcards.type}_{wildcards.sample}_temp
+        awk -v OFS='\t' 'substr($10,0,3)!="./."' SNP_calls/{wildcards.type}_{wildcards.sample}_temp > {output}
+        rm SNP_calls/{wildcards.type}_{wildcards.sample}_temp
+        """
+
+# make vcf.gz (+index) for downstream processing
+# first add sample name to header
+rule VCFSample:
+    input:
+        "SNP_calls/{sample}.{type}_SNPs_Good.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_Good2.vcf"
+    log:
+        "logs/{type}_{sample}_vcf1.log"
+    threads: 1
+    shell:
+        "(sed -e 's/NA00001/{wildcards.sample}/g' {input} > {output}) 2> {log}"
+
+rule VCFgz:
+    input:
+        "SNP_calls/{sample}.{type}_SNPs_Good2.vcf"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_vcf1.log"
+    threads: 1
+    shell:
+        "(bcftools view {input} -O z -o {output}) 2> {log}"
+
+rule VCFgzIndex:
+    input:
+        "SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz"
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz.tbi"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_vcf2.log"
+    threads: 1
+    shell:
+        "(bcftools index -t {input}) 2> {log}"
+
+# Downstream processing with RtgTools:
+# run RtgTools vcf evaluation with variant quality (QUAL) score as score value
+rule RTGQUAL:
+    input:
+        VCFs="SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz",
+        index="SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz.tbi",
+        base="../../reseq/variants/SNPs_{sample}.vcf.gz"
+    output:
+        "RTG_QUAL_{sample}.{type}_done.txt"
+    conda:
+        "../src/env_RTG.yml"
+    log:
+        "logs/{type}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (rtg vcfeval -b {input.base} -c {input.VCFs} -o RTG_QUAL_{wildcards.sample}.{wildcards.type} -t ../../reseq/genome/reference --roc-subset snp --vcf-score-field=QUAL) 2> {log}
+        touch {output}
+        """
+
+# get SNPs called as false negative SNPs
+rule RTGFN:
+    input:
+        VCFs="RTG_QUAL_{sample}.{type}/fn.vcf.gz",
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_FN"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_FN.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"
+
+# get SNPs called as false postive SNPs
+rule RTGFP:
+    input:
+        VCFs="RTG_QUAL_{sample}.{type}/fp.vcf.gz",
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_FP"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_FP.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT\n' {input} > {output}) 2> {log}"
+
+# get SNPs called as false postive SNPs while keeping genotype information
+rule RTGFPGT:
+    input:
+        VCFs="RTG_QUAL_{sample}.{type}/fp.vcf.gz",
+    output:
+        "SNP_calls/{sample}.{type}_SNPs_FP_GT"
+    conda:
+        "../src/env_bcftools.yml"
+    log:
+        "logs/{type}_{sample}_FP_GT.log"
+    threads: 1
+    shell:
+        "(bcftools query -f '%CHROM %POS %REF %ALT [%GT]\n' {input} > {output}) 2> {log}"
+
+# run RtgTools vcf evaluation with genotype quality (GQ) score as score value
+rule RTGGQ:
+    input:
+        VCFs="SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz",
+        index="SNP_calls/{sample}.{type}_SNPs_Good.vcf.gz.tbi",
+        base="../../reseq/variants/SNPs_{sample}.vcf.gz"
+    output:
+        "RTG_GQ_{sample}.{type}_done.txt"
+    conda:
+        "../src/env_RTG.yml"
+    log:
+        "logs/{type}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (rtg vcfeval -b {input.base} -c {input.VCFs} -o RTG_GQ_{wildcards.sample}.{wildcards.type} -t ../../reseq/genome/reference --roc-subset snp) 2> {log}
+        touch {output}
+        """
+
+# make output readable
+rule RTG:
+    input:
+        "RTG_{para}_{sample}.{type}/weighted_roc.tsv.gz"
+    output:
+        "RTG_{para}_{sample}.{type}/weighted_roc.tsv"
+    log:
+        "logs/{para}_{type}_{sample}_RTG.log"
+    threads: 1
+    shell:
+        """
+        (zcat {input} > {output}) 2> {log}
+        """
